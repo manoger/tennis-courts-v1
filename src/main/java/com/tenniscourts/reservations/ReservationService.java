@@ -1,6 +1,8 @@
 package com.tenniscourts.reservations;
 
 import com.tenniscourts.exceptions.EntityNotFoundException;
+import com.tenniscourts.schedules.ScheduleMapper;
+import com.tenniscourts.schedules.ScheduleRepository;
 import lombok.AllArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -16,8 +18,16 @@ public class ReservationService {
 
     private final ReservationMapper reservationMapper;
 
+    private final ScheduleRepository scheduleRepository;
+    private final ScheduleMapper scheduleMapper;
+
     public ReservationDTO bookReservation(CreateReservationRequestDTO createReservationRequestDTO) {
-        throw new UnsupportedOperationException();
+        scheduleRepository.findById(createReservationRequestDTO.getScheduleId()).orElseThrow(()->{
+            throw new EntityNotFoundException("Schedule id not found.");
+        });
+        var reservation = reservationMapper.map(createReservationRequestDTO);
+        reservation.setValue(new BigDecimal(10));
+        return reservationMapper.map(reservationRepository.save(reservation));
     }
 
     public ReservationDTO findReservation(Long reservationId) {
@@ -63,31 +73,39 @@ public class ReservationService {
 
     public BigDecimal getRefundValue(Reservation reservation) {
         long hours = ChronoUnit.HOURS.between(LocalDateTime.now(), reservation.getSchedule().getStartDateTime());
-
+        long minutes = ChronoUnit.MINUTES.between(LocalDateTime.now(), reservation.getSchedule().getStartDateTime());
         if (hours >= 24) {
             return reservation.getValue();
+        }else if(hours >= 12){
+            return reservation.getValue().multiply(BigDecimal.valueOf(.75));
+        }else if(hours >= 2){
+            return reservation.getValue().multiply(BigDecimal.valueOf(.5));
+        }else if(minutes >= 1){
+            return reservation.getValue().multiply(BigDecimal.valueOf(.25));
         }
 
         return BigDecimal.ZERO;
     }
 
-    /*TODO: This method actually not fully working, find a way to fix the issue when it's throwing the error:
-            "Cannot reschedule to the same slot.*/
     public ReservationDTO rescheduleReservation(Long previousReservationId, Long scheduleId) {
-        Reservation previousReservation = cancel(previousReservationId);
+
+        Reservation previousReservation = reservationRepository.findById(previousReservationId).orElseThrow(()->{
+            throw new EntityNotFoundException("Reservation not found.");
+        });
 
         if (scheduleId.equals(previousReservation.getSchedule().getId())) {
             throw new IllegalArgumentException("Cannot reschedule to the same slot.");
         }
-
-        previousReservation.setReservationStatus(ReservationStatus.RESCHEDULED);
-        reservationRepository.save(previousReservation);
 
         ReservationDTO newReservation = bookReservation(CreateReservationRequestDTO.builder()
                 .guestId(previousReservation.getGuest().getId())
                 .scheduleId(scheduleId)
                 .build());
         newReservation.setPreviousReservation(reservationMapper.map(previousReservation));
+
+        BigDecimal refundValue = getRefundValue(previousReservation);
+        this.updateReservation(previousReservation, refundValue, ReservationStatus.RESCHEDULED);
+
         return newReservation;
     }
 }
